@@ -29,8 +29,18 @@ def open(sqlite_file, table, index_all_columns=False, fast_and_unsafe=False):
     """Convenience function to easily instantiate a LazyTable class"""
     return LazyTable(sqlite_file, table, index_all_columns, fast_and_unsafe)
 
-class LazyTableError(Exception):
-    pass
+def escape_identifier(id):
+    """Escape sqlite table, column and index names
+
+    Record field names can be sql identifiters:
+    >>> t = open(':memory:', 't')
+    >>> t.insert({'customer':'yoyodine', 'order':42})
+    >>> list(t.get())
+    [{'customer': 'yoyodine', 'order': 42, 'rowid': 1}]
+    """
+
+    return '"%s"' % id.replace('"', '""')
+
 
 class LazyTable():
 
@@ -40,6 +50,7 @@ class LazyTable():
         Features:
             Insert or update will add columns to the table automatically.
             Bulk insert should be fairly fast in fast_and_unsafe mode.
+            Easy indexing and raw query support
         """
         self.sqlite_file = sqlite_file
         self.connection = sqlite3.connect(sqlite_file)
@@ -62,6 +73,146 @@ class LazyTable():
             #print list(self.connection.execute('PRAGMA journal_mode'))
             #print list(self.connection.execute('PRAGMA synchronous'))
 
+    def insert(self, record):
+        """Insert a record (dict) into the table, adding columns as needed
+
+        >>> t = open(':memory:', 't')
+        >>> t.insert({'a': 42, 'b': 'foo'})
+        >>> list(t.get())
+        [{'a': 42, 'b': 'foo', 'rowid': 1}]
+        """
+        
+        return(self.insert_list([record]))
+
+    def get(self, matching={}):
+        """Fetch rows as dicts matching a selection criteria, returns an iterator
+
+        >>> t = open(':memory:', 't')
+        >>> t.insert({'name':'bob', 'color':'blue'})
+        >>> t.insert({'name':'alice', 'color':'red'})
+        >>> list(t.get({'name':'alice'}))
+        [{'color': 'red', 'name': 'alice', 'rowid': 2}]
+        >>> list(t.get({'name':'bill'}))
+        []
+        >>> list(t.get())
+        [{'color': 'blue', 'name': 'bob', 'rowid': 1}, {'color': 'red', 'name': 'alice', 'rowid': 2}]
+
+        """
+
+        c = self.connection.cursor()
+        if not set(matching.keys()).issubset(self.columns):
+            return None
+        (ands, vals) = self._mk_ands(matching)
+        if ands:
+            ands = ' WHERE ' + ands
+        c.execute("SELECT * FROM %s %s ORDER BY rowid" % (escape_identifier(self.table) , ands), vals)
+        return self.fetchall(c)
+
+    def getone(self,  matching):
+        """Get the first matching record from the table, or None
+
+        >>> t = open(':memory:', 't')
+        >>> t.insert({'name':'bob', 'color':'blue'})
+        >>> t.insert({'name':'alice', 'color':'red'})
+        >>> t.getone({'name':'bob'})
+        {'color': 'blue', 'name': 'bob', 'rowid': 1}
+
+        >>> t.getone({'name':'jane'})
+        
+        """
+        result = None
+        i = self.get(matching)
+        if i:
+            result = next(i, None)
+        return result
+
+    def update(self, record, matching):
+        """Sets all rows matching the key to the values in record
+
+        >>> t = open(':memory:', 't')
+        >>> t.insert({'name':'bob', 'color':'blue'})
+        >>> t.insert({'name':'alice', 'color':'red'})
+        >>> c = t.update({'color':'green'}, {'name':'alice'})
+        >>> list(t.get())
+        [{'color': 'blue', 'name': 'bob', 'rowid': 1}, {'color': 'green', 'name': 'alice', 'rowid': 2}]
+
+        Can be used to update an entire column like so:
+        >>> c = t.update({'color':'cyan'}, {})
+        >>> list(t.get())
+        [{'color': 'cyan', 'name': 'bob', 'rowid': 1}, {'color': 'cyan', 'name': 'alice', 'rowid': 2}]
+
+        """
+    
+        if self.columns != set(map(string.lower, record.keys())):
+            self.expand(record)
+        c = self.connection.cursor()
+        cols = []
+        vals =[]
+        for k in record:
+            if record[k] == None:
+                # dont insert none values
+                cols.append(k + " = NULL")
+            else:
+                cols.append(k + " = ?")
+                vals.append(record[k])
+        (ands, kvals) = self._mk_ands(matching)
+        if ands:
+            ands = ' WHERE ' + ands
+        sql = ("UPDATE %s SET " % (escape_identifier(self.table))) +  ' , '.join(cols) + ands
+        #pprint.pprint((ands, kvals))
+        r = c.execute(sql, vals + kvals )
+        self.connection.commit()
+        return r
+
+    def upsert(self, record, matching):
+        """Insert or, if there is already one matching, update that record
+
+        Will create a record if it is missing:
+        >>> t = open(':memory:', 't')
+        >>> t.upsert({'name':'bob', 'color':'blue'}, {'name':'bob'})
+        >>> list(t.get())
+        [{'color': 'blue', 'name': 'bob', 'rowid': 1}]
+
+        Will update redords if the key matches:
+        >>> t.upsert({'name':'jane', 'color':'blue'}, {'name':'bob'})
+        >>> list(t.get())
+        [{'color': 'blue', 'name': 'jane', 'rowid': 1}]
+        """
+
+        with self.connection:
+            self.connection.execute('BEGIN EXCLUSIVE').fetchall()
+            i = self.get(matching)
+            r = None
+            if i != None:
+                r = next(i, None)
+            if r!= None:
+                self.update(record, matching)
+            else:
+                self.insert(record)
+
+    def delete(self, matching):
+        """Delete rows matching a criteria
+
+        >>> t = open(':memory:', 't')
+        >>> t.insert({'name':'alice', 'color':'red'})
+        >>> t.insert({'name':'bob', 'color':'blue'})
+        >>> t.insert({'name':'jane', 'color':'blue'})
+        >>> c = t.delete({'name':'alice'})
+        >>> list(t.get())
+        [{'color': 'blue', 'name': 'bob', 'rowid': 2}, {'color': 'blue', 'name': 'jane', 'rowid': 3}]
+        >>> c = t.delete({'color':'blue'})
+        >>> list(t.get())
+        []
+        """
+
+        c = self.connection.cursor()
+        (ands, vals) = self._mk_ands(matching)
+        if ands:
+            ands = ' WHERE ' + ands
+        c.execute("DELETE FROM %s %s " % (escape_identifier(self.table) , ands), vals)
+        return self.fetchall(c)
+
+
     def get_columns(self):
         """Returns a list of columns
 
@@ -70,7 +221,7 @@ class LazyTable():
         >>> t.get_columns()
         set(['foo', 'rowid'])
         """
-        c = self.connection.execute('select * from %s' % self.table)
+        c = self.connection.execute('SELECT * from %s' % escape_identifier(self.table))
         columns = set()
         for column in c.description:
             columns.add(column[0].lower())
@@ -131,10 +282,10 @@ class LazyTable():
             if record[k] == None:
                 # dont insert none values
                 continue
-            cols.append(k)
+            cols.append(escape_identifier(k))
             cols_q.append('?')
             vals.append(record[k])
-        sql = ("INSERT INTO %s " % (self.table)) +  '(' + ','.join(cols) + ') VALUES (' + ','.join(cols_q) + ')'
+        sql = ("INSERT INTO %s " % (escape_identifier(self.table))) +  '(' + ','.join(cols) + ') VALUES (' + ','.join(cols_q) + ')'
         #print sql
         r = c.execute(sql, vals)
         if commit:
@@ -142,106 +293,20 @@ class LazyTable():
         #pprint.pprint(record, indent=2)
         return r
 
-    def update(self, record, key):
-        """performs an update, sets all rows matching the key to the values in record
-
-        >>> t = open(':memory:', 't')
-        >>> t.insert({'name':'bob', 'color':'blue'})
-        >>> t.insert({'name':'alice', 'color':'red'})
-        >>> c = t.update({'color':'green'}, {'name':'alice'})
-        >>> list(t.get())
-        [{'color': 'blue', 'name': 'bob', 'rowid': 1}, {'color': 'green', 'name': 'alice', 'rowid': 2}]
-        >>> c = t.update({'color':'cyan'}, {})
-        >>> list(t.get())
-        [{'color': 'cyan', 'name': 'bob', 'rowid': 1}, {'color': 'cyan', 'name': 'alice', 'rowid': 2}]
-
-        """
-    
-        if self.columns != set(map(string.lower, record.keys())):
-            self.expand(record)
-        c = self.connection.cursor()
-        cols = []
-        vals =[]
-        for k in record:
-            if record[k] == None:
-                # dont insert none values
-                cols.append(k + " = NULL")
-            else:
-                cols.append(k + " = ?")
-                vals.append(record[k])
-        (ands, kvals) = self._mk_ands(key)
-        if ands:
-            ands = ' WHERE ' + ands
-        sql = ("UPDATE %s SET " % (self.table)) +  ' , '.join(cols) + ands
-        #pprint.pprint((ands, kvals))
-        r = c.execute(sql, vals + kvals )
-        self.connection.commit()
-        return r
-
     def _mk_ands(self, selection):
         """Make the and clause for a sql where statement
 
         >>> t = open(':memory:', 't')
         >>> t._mk_ands({'a':1, 'b':2})
-        ('a = ?  AND b = ? ', [1, 2])
+        ('"a" = ?  AND "b" = ? ', [1, 2])
         """
 
         clauses = []
         vals = []
         for n in selection:
-            clauses.append(n + ' = ? ')
+            clauses.append(escape_identifier(n) + ' = ? ')
             vals.append(selection[n])
         return (' AND '.join(clauses), vals)
-
-    def get(self, record={}):
-        """Fetch rows as dicts matching a selection criteria, returns an iterator
-
-        >>> t = open(':memory:', 't')
-        >>> t.insert({'name':'bob', 'color':'blue'})
-        >>> t.insert({'name':'alice', 'color':'red'})
-        >>> list(t.get({'name':'alice'}))
-        [{'color': 'red', 'name': 'alice', 'rowid': 2}]
-        >>> list(t.get({'name':'bill'}))
-        []
-        >>> list(t.get())
-        [{'color': 'blue', 'name': 'bob', 'rowid': 1}, {'color': 'red', 'name': 'alice', 'rowid': 2}]
-
-        """
-
-        c = self.connection.cursor()
-        if not set(record.keys()).issubset(self.columns):
-            return None
-        (ands, vals) = self._mk_ands(record)
-        if ands:
-            ands = ' WHERE ' + ands
-        c.execute("SELECT * FROM %s " % self.table + ands, vals)
-        return self.fetchall(c)
-
-    def upsert(self, record, keys):
-        """Insert or update a record
-
-        Will create a record if it is missing:
-        >>> t = open(':memory:', 't')
-        >>> t.upsert({'name':'bob', 'color':'blue'}, {'name':'bob'})
-        >>> list(t.get())
-        [{'color': 'blue', 'name': 'bob', 'rowid': 1}]
-
-        Will update redords if the key matches:
-        >>> t.upsert({'name':'jane', 'color':'blue'}, {'name':'bob'})
-        >>> list(t.get())
-        [{'color': 'blue', 'name': 'jane', 'rowid': 1}]
-        """
-
-        with self.connection:
-            self.connection.execute('BEGIN EXCLUSIVE').fetchall()
-            i = self.get(keys)
-            r = None
-            if i != None:
-                r = next(i, None)
-            if r!= None:
-                self.update(record, keys)
-            else:
-                self.insert(record)
 
     def expand(self, record):
         """Adds columns to the table so it can hold record
@@ -270,10 +335,10 @@ class LazyTable():
                 sql_type = 'integer'
             elif new_type == types.FloatType:
                 sql_type = 'real'
-            c.execute("ALTER TABLE %s ADD COLUMN %s %s default NULL" %  (self.table, new_column, sql_type))
-            if self.index_all_columns:
-                c.execute("CREATE INDEX if not exists _index_%s ON %s ( %s )" %  (new_column, self.table, new_column))
+            c.execute("ALTER TABLE %s ADD COLUMN %s %s default NULL" %  (escape_identifier(self.table), escape_identifier(new_column), sql_type))
             self.connection.commit()
+            if self.index_all_columns:
+                self.index(new_column)
         self.columns = self.get_columns()
             
     def index(self, col):
@@ -285,7 +350,7 @@ class LazyTable():
         """
 
         c = self.connection.cursor()
-        c.execute("CREATE INDEX if not exists _index_%s ON %s ( %s )" %  (col, self.table, col))
+        c.execute("CREATE INDEX if not exists %s ON %s ( %s )" %  (escape_identifier('index_%s_%s' % ((self.table, col))), escape_identifier(self.table), escape_identifier(col)))
         self.connection.commit()
 
     def index_all(self):
@@ -308,7 +373,7 @@ class LazyTable():
         >>> t.drop_index('a')
         """
         c = self.connection.cursor()
-        c.execute("DROP INDEX if exists _index_%s" %  (col,))
+        c.execute("DROP INDEX IF EXISTS %s" % (escape_identifier('index_%s_%s' % ((self.table, col))),))
         self.connection.commit()
         
     def drop_index_all(self):
@@ -330,20 +395,9 @@ class LazyTable():
         >>> t.analyze()
         """
         c = self.connection.cursor()
-        c.execute("ANALYZE %s" %  self.table)
+        c.execute("ANALYZE %s" %  escape_identifier(self.table))
         self.connection.commit()
         
-    def insert(self, record):
-        """Insert a record into the table
-
-        >>> t = open(':memory:', 't')
-        >>> t.insert({'a': 42, 'b': 'foo'})
-        >>> list(t.get())
-        [{'a': 42, 'b': 'foo', 'rowid': 1}]
-        """
-        
-        return(self.insert_list([record]))
-
     def insert_list(self, records):
         """Insert a list (iterable) of records into the table
 
