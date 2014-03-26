@@ -7,7 +7,7 @@ setup(
     url='https://github.com/samuelinsf/lazytable',
     license='Software license AGPL version 3.',
     description='A basic sqlite table wrapper for python',
-    long_description=read('README.rst'),
+    long_description=open('README.rst').read(),
     author='samuelinsf',
 )
 
