@@ -64,7 +64,7 @@ class LazyTable():
             (
             rowid INTEGER PRIMARY KEY ASC
             )
-        ''' % self.table)
+        ''' % escape_identifier(self.table))
         self.connection.commit()
         self.columns = self.get_columns()
         if fast_and_unsafe:
