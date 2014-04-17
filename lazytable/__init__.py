@@ -32,8 +32,8 @@ def open(sqlite_file, table, index_all_columns=False, fast_and_unsafe=False):
 def escape_identifier(id):
     """Escape sqlite table, column and index names
 
-    Record field names can be sql identifiters:
-    >>> t = open(':memory:', 't')
+    Record field names and table names can be sql identifiters:
+    >>> t = open(':memory:', 'some crazy table name')
     >>> t.insert({'customer':'yoyodine', 'order':42})
     >>> list(t.get())
     [{'customer': 'yoyodine', 'order': 42, 'rowid': 1}]

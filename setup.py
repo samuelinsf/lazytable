@@ -2,7 +2,7 @@ from distutils.core import setup
 
 setup(
     name='lazytable',
-    version='0.3.0',
+    version='0.3.2',
     packages=['lazytable',],
     url='https://github.com/samuelinsf/lazytable',
     license='Software license AGPL version 3.',
