@@ -52,8 +52,8 @@ class LazyTable():
             Bulk insert should be fairly fast in fast_and_unsafe mode.
             Easy indexing and raw query support
         """
-        self.sqlite_file = sqlite_file
-        self.connection = sqlite3.connect(sqlite_file)
+        self.file = sqlite_file
+        self.connection = sqlite3.connect(self.file)
         self.connection.text_factory = str
         self.connection.row_factory = sqlite3.Row
         self.table = table
@@ -108,16 +108,16 @@ class LazyTable():
         c.execute("SELECT * FROM %s %s ORDER BY rowid" % (escape_identifier(self.table) , ands), vals)
         return self.fetchall(c)
 
-    def getone(self,  matching):
+    def get_one(self,  matching):
         """Get the first matching record from the table, or None
 
         >>> t = open(':memory:', 't')
         >>> t.insert({'name':'bob', 'color':'blue'})
         >>> t.insert({'name':'alice', 'color':'red'})
-        >>> t.getone({'name':'bob'})
+        >>> t.get_one({'name':'bob'})
         {'color': 'blue', 'name': 'bob', 'rowid': 1}
 
-        >>> t.getone({'name':'jane'})
+        >>> t.get_one({'name':'jane'})
         
         """
         result = None
@@ -126,20 +126,27 @@ class LazyTable():
             result = next(i, None)
         return result
 
-    def update(self, record, matching):
+    def getone(self,  matching):
+        return self.get_one(matching)
+
+    def update(self, matching, record):
         """Sets all rows matching the key to the values in record
 
         >>> t = open(':memory:', 't')
         >>> t.insert({'name':'bob', 'color':'blue'})
         >>> t.insert({'name':'alice', 'color':'red'})
-        >>> c = t.update({'color':'green'}, {'name':'alice'})
+        >>> c = t.update({'name':'alice'}, {'color':'green'})
         >>> list(t.get())
         [{'color': 'blue', 'name': 'bob', 'rowid': 1}, {'color': 'green', 'name': 'alice', 'rowid': 2}]
 
         Can be used to update an entire column like so:
-        >>> c = t.update({'color':'cyan'}, {})
+        >>> c = t.update({}, {'color':'cyan'})
         >>> list(t.get())
         [{'color': 'cyan', 'name': 'bob', 'rowid': 1}, {'color': 'cyan', 'name': 'alice', 'rowid': 2}]
+
+        Correctly handles columns named after sqlite keywords:
+        >>> c = t.update({}, {'group':'sf'})
+        >>> c = t.update({'group':'sf'}, {'color': 'international orange'})
 
         """
     
@@ -151,9 +158,9 @@ class LazyTable():
         for k in record:
             if record[k] == None:
                 # dont insert none values
-                cols.append(k + " = NULL")
+                cols.append(escape_identifier(k) + " = NULL")
             else:
-                cols.append(k + " = ?")
+                cols.append(escape_identifier(k) + " = ?")
                 vals.append(record[k])
         (ands, kvals) = self._mk_ands(matching)
         if ands:
@@ -164,17 +171,17 @@ class LazyTable():
         self.connection.commit()
         return r
 
-    def upsert(self, record, matching):
+    def upsert(self, matching, record):
         """Insert or, if there is already one matching, update that record
 
         Will create a record if it is missing:
         >>> t = open(':memory:', 't')
-        >>> t.upsert({'name':'bob', 'color':'blue'}, {'name':'bob'})
+        >>> t.upsert({'name':'bob'}, {'name':'bob', 'color':'blue'})
         >>> list(t.get())
         [{'color': 'blue', 'name': 'bob', 'rowid': 1}]
 
         Will update redords if the key matches:
-        >>> t.upsert({'name':'jane', 'color':'blue'}, {'name':'bob'})
+        >>> t.upsert({'name':'bob'}, {'name':'jane', 'color':'blue'})
         >>> list(t.get())
         [{'color': 'blue', 'name': 'jane', 'rowid': 1}]
         """
@@ -185,8 +192,8 @@ class LazyTable():
             r = None
             if i != None:
                 r = next(i, None)
-            if r!= None:
-                self.update(record, matching)
+            if r != None:
+                self.update(matching, record)
             else:
                 self.insert(record)
 
@@ -299,13 +306,18 @@ class LazyTable():
         >>> t = open(':memory:', 't')
         >>> t._mk_ands({'a':1, 'b':2})
         ('"a" = ?  AND "b" = ? ', [1, 2])
+        >>> t._mk_ands({'a':None, 'b':2})
+        ('"a" = NULL  AND "b" = ? ', [2])
         """
 
         clauses = []
         vals = []
         for n in selection:
-            clauses.append(escape_identifier(n) + ' = ? ')
-            vals.append(selection[n])
+            if selection[n] == None:
+                clauses.append(escape_identifier(n) + ' = NULL ')
+            else:
+                clauses.append(escape_identifier(n) + ' = ? ')
+                vals.append(selection[n])
         return (' AND '.join(clauses), vals)
 
     def expand(self, record):
