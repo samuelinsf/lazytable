@@ -22,7 +22,6 @@ import pprint
 import sqlite3
 import types
 import sys
-import string
 import time
 
 def open(sqlite_file, table, index_all_columns=False, fast_and_unsafe=False):
@@ -35,7 +34,7 @@ def escape_identifier(id):
     Record field names and table names can be sql identifiters:
     >>> t = open(':memory:', 'some crazy table name')
     >>> t.insert({'customer':'yoyodine', 'order':42})
-    >>> list(t.get())
+    >>> pprint.pprint(list(t.get()))
     [{'customer': 'yoyodine', 'order': 42, 'rowid': 1}]
     """
 
@@ -54,7 +53,9 @@ class LazyTable():
         """
         self.file = sqlite_file
         self.connection = sqlite3.connect(self.file)
-        self.connection.text_factory = str
+        self.connection.execute('PRAGMA encoding = "UTF-8"')
+        if sys.version_info[0] < 3:
+            self.connection.text_factory = str
         self.connection.row_factory = sqlite3.Row
         self.table = table
         self.index_all_columns = index_all_columns
@@ -78,7 +79,7 @@ class LazyTable():
 
         >>> t = open(':memory:', 't')
         >>> t.insert({'a': 42, 'b': 'foo'})
-        >>> list(t.get())
+        >>> pprint.pprint(list(t.get()))
         [{'a': 42, 'b': 'foo', 'rowid': 1}]
         """
         
@@ -90,13 +91,13 @@ class LazyTable():
         >>> t = open(':memory:', 't')
         >>> t.insert({'name':'bob', 'color':'blue'})
         >>> t.insert({'name':'alice', 'color':'red'})
-        >>> list(t.get({'name':'alice'}))
+        >>> pprint.pprint(list(t.get({'name':'alice'})))
         [{'color': 'red', 'name': 'alice', 'rowid': 2}]
         >>> list(t.get({'name':'bill'}))
         []
-        >>> list(t.get())
-        [{'color': 'blue', 'name': 'bob', 'rowid': 1}, {'color': 'red', 'name': 'alice', 'rowid': 2}]
-
+        >>> pprint.pprint(list(t.get()))
+        [{'color': 'blue', 'name': 'bob', 'rowid': 1},
+         {'color': 'red', 'name': 'alice', 'rowid': 2}]
         """
 
         c = self.connection.cursor()
@@ -114,7 +115,7 @@ class LazyTable():
         >>> t = open(':memory:', 't')
         >>> t.insert({'name':'bob', 'color':'blue'})
         >>> t.insert({'name':'alice', 'color':'red'})
-        >>> t.get_one({'name':'bob'})
+        >>> pprint.pprint(t.get_one({'name':'bob'}))
         {'color': 'blue', 'name': 'bob', 'rowid': 1}
 
         >>> t.get_one({'name':'jane'})
@@ -136,13 +137,15 @@ class LazyTable():
         >>> t.insert({'name':'bob', 'color':'blue'})
         >>> t.insert({'name':'alice', 'color':'red'})
         >>> c = t.update({'name':'alice'}, {'color':'green'})
-        >>> list(t.get())
-        [{'color': 'blue', 'name': 'bob', 'rowid': 1}, {'color': 'green', 'name': 'alice', 'rowid': 2}]
+        >>> pprint.pprint(list(t.get()))
+        [{'color': 'blue', 'name': 'bob', 'rowid': 1},
+         {'color': 'green', 'name': 'alice', 'rowid': 2}]
 
         Can be used to update an entire column like so:
         >>> c = t.update({}, {'color':'cyan'})
-        >>> list(t.get())
-        [{'color': 'cyan', 'name': 'bob', 'rowid': 1}, {'color': 'cyan', 'name': 'alice', 'rowid': 2}]
+        >>> pprint.pprint(list(t.get()))
+        [{'color': 'cyan', 'name': 'bob', 'rowid': 1},
+         {'color': 'cyan', 'name': 'alice', 'rowid': 2}]
 
         Correctly handles columns named after sqlite keywords:
         >>> c = t.update({}, {'group':'sf'})
@@ -150,7 +153,7 @@ class LazyTable():
 
         """
     
-        if self.columns != set(map(string.lower, record.keys())):
+        if self.columns != set(map(str.lower, list(record.keys()))):
             self.expand(record)
         c = self.connection.cursor()
         cols = []
@@ -177,12 +180,12 @@ class LazyTable():
         Will create a record if it is missing:
         >>> t = open(':memory:', 't')
         >>> t.upsert({'name':'bob'}, {'name':'bob', 'color':'blue'})
-        >>> list(t.get())
+        >>> pprint.pprint(list(t.get()))
         [{'color': 'blue', 'name': 'bob', 'rowid': 1}]
 
         Will update redords if the key matches:
         >>> t.upsert({'name':'bob'}, {'name':'jane', 'color':'blue'})
-        >>> list(t.get())
+        >>> pprint.pprint(list(t.get()))
         [{'color': 'blue', 'name': 'jane', 'rowid': 1}]
         """
 
@@ -205,8 +208,10 @@ class LazyTable():
         >>> t.insert({'name':'bob', 'color':'blue'})
         >>> t.insert({'name':'jane', 'color':'blue'})
         >>> c = t.delete({'name':'alice'})
-        >>> list(t.get())
-        [{'color': 'blue', 'name': 'bob', 'rowid': 2}, {'color': 'blue', 'name': 'jane', 'rowid': 3}]
+        >>> pprint.pprint(list(t.get()))
+        [{'color': 'blue', 'name': 'bob', 'rowid': 2},
+         {'color': 'blue', 'name': 'jane', 'rowid': 3}]
+
         >>> c = t.delete({'color':'blue'})
         >>> list(t.get())
         []
@@ -225,8 +230,8 @@ class LazyTable():
 
         >>> t = open(':memory:', 't')
         >>> t.insert({'foo':'bar'})
-        >>> t.get_columns()
-        set(['foo', 'rowid'])
+        >>> t.get_columns() == set(['foo', 'rowid'])
+        True
         """
         c = self.connection.execute('SELECT * from %s' % escape_identifier(self.table))
         columns = set()
@@ -250,10 +255,10 @@ class LazyTable():
         >>> t.insert({'foo':'bar'})
         >>> t.insert({'foo':'baz'})
         >>> c = t.query('SELECT * FROM t ORDER BY rowid')
-        >>> t._fetchone_record(c)
-        {'foo': 'bar', 'rowid': 1}
-        >>> t._fetchone_record(c)
-        {'foo': 'baz', 'rowid': 2}
+        >>> t._fetchone_record(c) ==  {'foo': 'bar', 'rowid': 1}
+        True
+        >>> t._fetchone_record(c) ==  {'foo': 'baz', 'rowid': 2}
+        True
         >>> t._fetchone_record(c) == None
         True
 
@@ -275,11 +280,11 @@ class LazyTable():
         >>> c = t._insert_record({'foo':'bar'})
         >>> c.rowcount
         1
-        >>> list(t.get())
+        >>> pprint.pprint(list(t.get()))
         [{'foo': 'bar', 'rowid': 1}]
         """
 
-        if self.columns != set(map(string.lower, record.keys())):
+        if self.columns != set(map(str.lower, list(record.keys()))):
             self.expand(record)
         c = self.connection.cursor()
         cols = []
@@ -312,7 +317,7 @@ class LazyTable():
 
         clauses = []
         vals = []
-        for n in selection:
+        for n in sorted(selection):
             if selection[n] == None:
                 clauses.append(escape_identifier(n) + ' = NULL ')
             else:
@@ -326,11 +331,11 @@ class LazyTable():
         >>> t = open(':memory:', 't')
         >>> h = {'i':42, 'f':3.141, 's':'magic'}
         >>> t.expand(h)
-        >>> t.get_columns()
-        set(['i', 's', 'rowid', 'f'])
+        >>> set(t.get_columns()) == set(['i', 's', 'rowid', 'f'])
+        True
         >>> t.insert(h)
-        >>> list(t.get())
-        [{'i': 42, 's': 'magic', 'rowid': 1, 'f': 3.141}]
+        >>> pprint.pprint(list(t.get())) 
+        [{'f': 3.141, 'i': 42, 'rowid': 1, 's': 'magic'}]
         """
 
         c = self.connection.cursor()
@@ -339,14 +344,20 @@ class LazyTable():
                 # skip if other case'd version already exists
                 continue
             new_type = type(record[new_column])
-            if new_type == types.NoneType:
+            if new_type == type(None):
                 #dont add columns for None valued fields
                 continue
-            sql_type = 'blob'
-            if new_type == types.IntType:
-                sql_type = 'integer'
-            elif new_type == types.FloatType:
-                sql_type = 'real'
+            sql_type = 'BLOB'
+            if new_type == int:
+                sql_type = 'INTEGER'
+            elif new_type == float:
+                sql_type = 'REAL'
+            if sys.version_info[0] >= 3:
+                if new_type == str:
+                    sql_type = 'TEXT'
+            else:
+                if new_type == unicode:
+                    sql_type = 'TEXT'
             c.execute("ALTER TABLE %s ADD COLUMN %s %s default NULL" %  (escape_identifier(self.table), escape_identifier(new_column), sql_type))
             self.connection.commit()
             if self.index_all_columns:
@@ -438,14 +449,14 @@ class LazyTable():
         c = self.connection.cursor()
         start = time.time()
         if verbose:
-            print sql
+            print(sql)
         if values == None:
             r = c.execute(sql)
         else:
             r = c.execute(sql, values)
         done = time.time()
         if verbose:
-            print 'query took:', (done - start)
+            print('query took:', (done - start))
         return r
 
     def close(self):
