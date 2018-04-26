@@ -11,4 +11,4 @@ setup(
     author='samuelinsf',
 )
 
-#to upload: python setup.py sdist upload
+#to upload: python3 setup.py sdist upload
